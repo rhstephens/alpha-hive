@@ -1,97 +1,127 @@
-import requests
-from accounts import ACCOUNTS
 import json
-from bs4 import BeautifulSoup
 import os.path
-from collections import defaultdict
+import re
+import requests
+import time
+import hive_db
+from accounts import ACCOUNTS
+from bs4 import BeautifulSoup
+from collections import Counter
+from datetime import datetime
 
 BASE = 'https://boardgamearena.com'
 LOGIN = '/account/account/login.html'
-RANKING = '/halloffame/halloffame/getRanking.html'
+RANKING = '/gamepanel/gamepanel/getRanking.html'
+DATA = '/gamepanel?game=hive'
+PLAYER = '/gamestats'
 GAMES = '/gamestats/gamestats/getGames.html'
 ARCHIVE = '/gamereview/gamereview/requestTableArchive.html'
 REPLAY = '/archive/archive/logs.html'
-GAME_ID = 1003
+GAME_ID = 79
 # start and end dates
-SEASONS = {
-    2: (1594008000, 1601870400),
-    4: (1609822800, 1617681600),
-    5: (1617681600, 1625544000)
+SEASONS= {
+    16: (1700606490,1708537294)
 }
+
 DEPELETED = 'You have reached a limit (replay)'
 NO_ACCESS = 'Sorry, you need to be registered more than 24 hours and have played at least 2 games to access this feature.'
+
 
 def session_generator():
     # must be a verified bga account with >=2 games and >24 hours old
     for email, password in ACCOUNTS:
         sess = requests.Session()
-        # request to a login page needed to produce csrf token
+
+        # request to a login page needed to produce request_token
         resp = sess.get(BASE + '/account')
         soup = BeautifulSoup(resp.content, 'html.parser')
-        csrf_token = soup.find(id='csrf_token')['value']
-        login_info = {'email': email, 'password': password, 'rememberme': 'off', 'redirect': 'join', 'form_id': 'loginform', 'csrf_token': csrf_token}
+        token = soup.find(id='request_token')['value']
+        login_info = {'email': email, 'password': password, 'rememberme': 'off', 'redirect': 'join', 'form_id': 'loginform', 'request_token': token}
         sess.post(BASE + LOGIN, data=login_info)
+
+        # pass token along the headers (needed for later calls)
+        sess.headers['X-Request-Token'] = token
+        sess.headers['X-Requested-With'] = 'XMLHttpRequest'
+        
         yield sess
+    
+    print(f'session_generator(): ALL accounts exhausted')
 
-def get_top_arena_tables(season, number=10):
-    """ Returns a map with table ids to player ids for arena games with the top players.
+
+def get_current_season_timestamps(sess):
+    """ Returns a tuple containing the start and end dates of the current season in unix timestamp form.
     """
 
-    sess = next(session_generator())
-    tables = defaultdict(list)
-    for rank in range(1, number + 1):
-        player_id = get_player_by_rank(sess, rank, season)
-        for table_id in get_arena_tables(sess, player_id, SEASONS[season][0], SEASONS[season][1]):
-            tables[table_id].append(player_id)
-    return tables
+    resp = sess.get(BASE + DATA, params={'game_id': GAME_ID, 'with_ranking_info': 'false'})
+    j = resp.json()
+    #TODO: REMOVE
+    print(resp)
+    print(f'get_current_season response: {j}')
+    #
+    start_date = datetime.fromisoformat(j['currentArenaTimeSpan']['start'])
+    end_date = datetime.fromisoformat(j['currentArenaTimeSpan']['end'])
+    return (int(start_date.timestamp()), int(end_date.timestamp()))
 
-def get_player_by_rank(sess, rank, season):
-    """ Returns the id for the player with given rank for given arena season.
+
+def get_top_arena_tables(sess, player_ids, season=16):
+    """ Returns a set of unique table ids for arena games from the given player_ids this season.
     """
 
-    params = {'start': rank-1, 'game': GAME_ID, 'mode': 'arena', 'season': season}
-    resp = sess.get(BASE + RANKING, params=params)
-    return int(resp.json()['data']['ranks'][0]['id'])
+    all_tables = set()
+    start_date, end_date = SEASONS[season][0], SEASONS[season][1]
+    #TODO: start_date, end_date = get_current_season_timestamps(sess)
 
-def get_arena_tables(sess, player_id, start_date, end_date):
-    """ Returns the table ids of ranked arena games played between dates for player.
+
+    for player_id in player_ids:
+        # now that we have a valid token, search every page of this player's match history
+        params = {'page': 0, 'player': player_id, 'game_id': GAME_ID, 'start_date': start_date, 'end_date': end_date, 'finished': 1, 'updateStats': 0}
+        table_ids = set()
+        while True:
+            params['page'] += 1
+            resp = sess.get(BASE + GAMES, params=params)
+
+            # get tables that were not forfeit
+            tables = resp.json()['data']['tables']
+            if len(tables) == 0:
+                break
+            ids = [int(table['table_id']) for table in tables if table['concede'] != '1']
+            
+            table_ids.update(ids)
+
+        all_tables.update(table_ids)
+
+    return all_tables
+
+
+def get_players_by_rank(sess, num_players=10):
+    """ Returns the highest 10 ids for the players at, or below, the given rank
     """
 
-    params = {'page': 0, 'player': player_id, 'game_id': GAME_ID, 'start_date': start_date, 'end_date': end_date, 'finished': 1, 'updateStats': 0}
-    table_ids = []
-    while True:
-        params['page'] += 1
-        resp = sess.get(BASE + GAMES, params=params)
-        # get ranked arena tables that were not forfeit 
-        valid = lambda table: table['arena_win'] != None and table['unranked'] != '1' and int(table['scores'].split(',')[0]) > 1
-        ids = [int(table['table_id']) for table in resp.json()['data']['tables'] if valid(table)]
-        if len(ids) == 0:
-            break
-        table_ids.extend(ids)
-    return table_ids
+    players = set()
+    params = {'game': GAME_ID, 'mode': 'arena'}
 
-def save_table_replays_batch(table_ids, path):
-    """ Saves replay logs for a list of tables. 
-        Once an account reaches its replay limit, uses the next session from the generator. 
-        Ignores table_ids for which a file already exists.
+    # paginate 10 at a time
+    for start in range(0, num_players, 10):
+        params['start'] = start
+        resp = sess.get(BASE + RANKING, params=params)
+
+        #TODO lookup player_ids and see the last update time to reduce number of calls
+        for player in resp.json()['data']['ranks']:
+            if len(players) >= num_players:
+                break
+            players.add(int(player['id']))
+
+    return players
+
+
+def analyze_table_data(sess, table_id):
+    """ Returns all information about this table_id's replay in the form of:
+        (player_id_white, player_id_black, winner, every move history for this table_id game)
+        Returns None if error or the current account is unable to access further replays.
     """
 
-    generator = session_generator()
-    sess = next(generator, None)
-    for index, id in enumerate(table_ids):
-        fname = '{}/replays/{}.json'.format(path, id)
-        if not os.path.isfile(fname):
-            while sess and save_table_replay(sess, id, fname):
-                sess = next(generator, None)
-        if not sess:
-            print("Replays depleted for all logins. There are {} table replays remaining.".format(len(table_ids) - index))
-            break
-    return sess
-
-def save_table_replay(sess, table_id, file_name):
-    """ Saves replay log as json to file.
-        Returns true if the current account is unable to access further replays.
-    """
+    if not sess:
+        return
 
     # seemingly required to produce log
     sess.get(BASE + ARCHIVE, params={'table': table_id})
@@ -100,17 +130,129 @@ def save_table_replay(sess, table_id, file_name):
     if 'error' in j:
         if j['error'] == DEPELETED:
             print('Account replay access depleted.')
-            return True
+            return
         elif j['error'] == NO_ACCESS:
             print('Account cannot access any replays.')
-            return True
+            return
     
+    # GENERAL LAYOUT OF THE RESPONSE JSON:
+    # data
+    #   players
+    #       color
+    #   logs
+    #       move_id
+    #       data
+    #           type (tokenPlayed, queenSurr, [offer|accept]Draw, message)
+    #           log
+    #           args
+    #               notation
+    #               type_copied (only there if its a mosquito copy action)
+    #                
     try:
-        moves = j['data']['data']['data']
-        with open(file_name, 'w', encoding='utf-8') as file:
-            json.dump(moves, file, ensure_ascii=False)
-    except:
-        print("Error saving replay for table {}:".format(table_id))
-        print(resp.text)
-    return False
+        players = [player for player in j['data']['players']]
+        player_white = players[0]['id'] if players[0]['color'] == '#ffffff' else players[1]['id']
+        player_black = players[0]['id'] if players[0]['color'] == '#000000' else players[1]['id']
+        winner = -1
 
+        logs = [log for log in j['data']['logs']]
+        moves = [(move['move_id'], move['data']) for move in logs]
+        all_actions = []
+
+        for move_id, move in moves:
+            actions = []
+            for action in move:
+                result = {
+                    'move_number': move_id,
+                    'type': action['type'],
+                    'log': action['log']
+                }
+
+                if action['type'] == 'tokenPlayed':
+                    result['notation'] = action['args']['notation']
+                    result['type_copied'] = action['args']['type_copied'] if 'type_copied' in action['args'] else ''
+                elif action['type'] == 'queenSurr':
+                    winner = action['args']['winner']
+                elif action['type'] == 'offerDraw':
+                    pass
+                elif action['type'] == 'acceptDraw':
+                    pass
+                elif action['type'] == 'message':
+                    pass
+                else:
+                    # skip everything else
+                    continue
+
+                # only want to record relevant action types
+                actions.append(result)
+            all_actions.extend(actions)
+
+        # check for tie or draw
+        num_winners = [action['type'] for action in all_actions if action['type'] == 'queenSurr']
+        if len(num_winners) < 1:
+            winner = 0 #draw
+        elif len(num_winners) > 1:
+            winner = 1 #tie (aka sacrifice victory)
+
+        return (player_white, player_black, winner, all_actions)
+
+    except Exception as e:
+        #print(j)
+        print(f'Error analyzing replay for table {table_id}: ', e)
+        print(e.__traceback__.tb_lineno)
+        return
+
+
+# if ran as script, automatically begin scraping
+if __name__ == '__main__':
+    sess = next(session_generator(), None)
+
+    player_ids = get_players_by_rank(sess, 10)
+    print(f'found the top {len(player_ids)} ranking player IDs')
+
+    for player in player_ids:
+        hive_db.searched_player(player)
+
+    table_ids = list(get_top_arena_tables(sess, player_ids))
+    print(f'proccessing {len(table_ids)} table IDs:')
+
+    index = 0
+    while sess and index < len(table_ids):
+        table_id = table_ids[index]
+        result = analyze_table_data(sess, table_id)
+
+        if not result:
+            # try to get new acct
+            # if result fails again, its all ogre
+            print(f'session expired or account depleted... attempting next account')
+            sess = next(session_generator(), None)
+            result = analyze_table_data(sess, table_id)
+
+        if not result:
+            break
+        
+        # send to db
+        hive_db.insert_table_data(table_id, *result)
+        index += 1
+
+    print(f'SCRAPING COMPLETED')
+    print(f'  added {index} tables to db')
+    print(f'  {len(table_ids) - index} ids remaining:')
+    print(f'    {table_ids[index:]}')
+
+
+# old way of retrieving request token from embedded javascript. Leaving here in case its needed again
+'''
+    # need to get a request token for each individual player in order to retrieve their table history
+    params = {'player': player_id}
+    resp = sess.get(BASE + PLAYER, params=params)
+
+    # add req token to session header
+    soup = BeautifulSoup(resp.content, 'html.parser')
+    regex = re.compile(r"'(.*?)'") # used to extract token from raw quoted text
+    for tag in soup.find_all('script'):
+        tag_split = tag.string.split('requestToken: ')
+        if len(tag_split) > 1:
+            request_token = regex.match(tag_split[1]).group().strip("'")
+            sess.headers['X-Request-Token'] = request_token
+            sess.headers['X-Requested-With'] = 'HMLHttpRequest'
+'''
