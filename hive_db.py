@@ -40,6 +40,7 @@ def init():
         print('ERROR: init() failed: ', e)
         exit(-1)
 
+
 def searched_player(player_id):
     ''' Updates players table with new timestamp to increase scraping efficieny
     '''
@@ -69,12 +70,6 @@ def insert_table_data(table_id, player_white, player_black, winner, actions, com
                     'INSERT OR REPLACE INTO tables(table_id, player_white, player_black, winner) VALUES(?,?,?,?)', 
                     (table_id, player_white, player_black, winner)
                 )
-                '''
-                cur.execute(
-                    'UPDATE tables SET player_white = ?, player_black = ?, winner = ? WHERE table_id = ?', 
-                    (player_white, player_black, winner, table_id)
-                )
-                '''
 
                 # convert actions into tuples for insert
                 convert = lambda action, table_id=table_id: (
@@ -98,5 +93,16 @@ def insert_table_data(table_id, player_white, player_black, winner, actions, com
     except Exception as e:
         print(f'ERROR inserting table_id {table_id}: ', e)
 
+
+def get_unique_table_ids():
+    try:
+        with closing(sqlite3.connect(DB_NAME)) as con:
+            with closing(con.cursor()) as cur:
+                cur.execute('SELECT DISTINCT table_id FROM actions')
+
+                return set(cur.fetchall())
+
+    except Exception as e:
+        print(f'ERROR retrieving unique table_ids: ', e)
 
 init()

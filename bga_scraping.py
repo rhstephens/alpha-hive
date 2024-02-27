@@ -26,6 +26,8 @@ SEASONS= {
 DEPELETED = 'You have reached a limit (replay)'
 NO_ACCESS = 'Sorry, you need to be registered more than 24 hours and have played at least 2 games to access this feature.'
 
+sess_gen = None
+
 
 def session_generator():
     # must be a verified bga account with >=2 games and >24 hours old
@@ -48,6 +50,14 @@ def session_generator():
     print(f'session_generator(): ALL accounts exhausted')
 
 
+def get_next_session():
+    global sess_gen
+    if not sess_gen:
+        sess_gen = session_generator()
+
+    return next(sess_gen, None)
+
+
 def get_current_season_timestamps(sess):
     """ Returns a tuple containing the start and end dates of the current season in unix timestamp form.
     """
@@ -68,9 +78,9 @@ def get_top_arena_tables(sess, player_ids, season=16):
     """
 
     all_tables = set()
+    exclusion_set = hive_db.get_unique_table_ids()
     start_date, end_date = SEASONS[season][0], SEASONS[season][1]
     #TODO: start_date, end_date = get_current_season_timestamps(sess)
-
 
     for player_id in player_ids:
         # now that we have a valid token, search every page of this player's match history
@@ -80,14 +90,16 @@ def get_top_arena_tables(sess, player_ids, season=16):
             params['page'] += 1
             resp = sess.get(BASE + GAMES, params=params)
 
-            # get tables that were not forfeit
             tables = resp.json()['data']['tables']
             if len(tables) == 0:
                 break
+
+            # get tables that were not forfeit
             ids = [int(table['table_id']) for table in tables if table['concede'] != '1']
-            
             table_ids.update(ids)
 
+        # exclude tables we already have in our DB
+        table_ids = table_ids - exclusion_set
         all_tables.update(table_ids)
 
     return all_tables
@@ -196,7 +208,6 @@ def analyze_table_data(sess, table_id):
         return (player_white, player_black, winner, all_actions)
 
     except Exception as e:
-        #print(j)
         print(f'Error analyzing replay for table {table_id}: ', e)
         print(e.__traceback__.tb_lineno)
         return
@@ -204,7 +215,7 @@ def analyze_table_data(sess, table_id):
 
 # if ran as script, automatically begin scraping
 if __name__ == '__main__':
-    sess = next(session_generator(), None)
+    sess = get_next_session()
 
     player_ids = get_players_by_rank(sess, 10)
     print(f'found the top {len(player_ids)} ranking player IDs')
@@ -224,10 +235,13 @@ if __name__ == '__main__':
             # try to get new acct
             # if result fails again, its all ogre
             print(f'session expired or account depleted... attempting next account')
-            sess = next(session_generator(), None)
-            result = analyze_table_data(sess, table_id)
+            sess = get_next_session()
+            if not sess:
+                break
+            continue
 
         if not result:
+            print(f'failed to retrieve data for table_id {table_id}')
             break
         
         # send to db
