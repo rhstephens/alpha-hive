@@ -100,7 +100,7 @@ def get_unique_table_ids():
             with closing(con.cursor()) as cur:
                 cur.execute('SELECT DISTINCT table_id FROM actions')
 
-                return set(cur.fetchall())
+                return set(map(lambda val: val[0], cur.fetchall()))
 
     except Exception as e:
         print(f'ERROR retrieving unique table_ids: ', e)
