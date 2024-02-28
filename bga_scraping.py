@@ -33,6 +33,7 @@ def session_generator():
     # must be a verified bga account with >=2 games and >24 hours old
     for email, password in ACCOUNTS:
         sess = requests.Session()
+        sess.email = email
 
         # request to a login page needed to produce request_token
         resp = sess.get(BASE + '/account')
@@ -227,6 +228,7 @@ if __name__ == '__main__':
     print(f'proccessing {len(table_ids)} table IDs:')
 
     index = 0
+    session_count = 0
     while sess and index < len(table_ids):
         table_id = table_ids[index]
         result = analyze_table_data(sess, table_id)
@@ -234,7 +236,8 @@ if __name__ == '__main__':
         if not result:
             # try to get new acct
             # if result fails again, its all ogre
-            print(f'session expired or account depleted... attempting next account')
+            print(f'session expired or account depleted... added {index - session_count} table_ids with {sess.email}, attempting next account')
+            session_count = index
             sess = get_next_session()
             if not sess:
                 break
