@@ -1,6 +1,7 @@
 import json
 import os.path
 import re
+import random
 import requests
 import time
 import hive_db
@@ -139,14 +140,23 @@ def analyze_table_data(sess, table_id):
     # seemingly required to produce log
     sess.get(BASE + ARCHIVE, params={'table': table_id})
     resp = sess.get(BASE + REPLAY, params={'table': table_id, 'translated': 'true'})
+
+    # detection prevention?
+    time.sleep(random.randint(3, 7))
+
     j = resp.json()
     if 'error' in j:
         if j['error'] == DEPELETED:
-            print('Account replay access depleted.')
+            print('Account replay access depleted.', sess.email)
             return
         elif j['error'] == NO_ACCESS:
-            print('Account cannot access any replays.')
+            print('Account cannot access any replays.', sess.email)
             return
+
+    if 'data' not in j:
+        print(f'Response from table_id {table_id} does not contain data:', sess.email)
+        print(j)
+        return
     
     # GENERAL LAYOUT OF THE RESPONSE JSON:
     # data
