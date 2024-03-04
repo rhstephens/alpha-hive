@@ -32,5 +32,5 @@ if [ "$time_difference" -gt 88200 ]; then
         echo "$PYTHON_PROGRAM failed with exit code $?"
     fi
 else
-    echo "Not enough time has elapsed since last execution ($time_difference seconds elapsed)"
+    echo "Not enough time has elapsed since last execution ($time_difference/88200 seconds elapsed)"
 fi

@@ -1,4 +1,5 @@
 *.pyc
 *.pdf
+*.log
 accounts.py
 last_execution_time.txt
