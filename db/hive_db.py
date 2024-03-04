@@ -2,7 +2,7 @@ import sqlite3
 import time
 from contextlib import closing
 
-DB_NAME = 'hivemind.db'
+DB_NAME = 'db/hivemind.db'
 DB_SCHEMA = '''
 BEGIN;
 CREATE TABLE IF NOT EXISTS actions(

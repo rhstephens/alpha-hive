@@ -4,7 +4,8 @@ import re
 import random
 import requests
 import time
-import hive_db
+
+from db import hive_db
 from accounts import ACCOUNTS
 from bs4 import BeautifulSoup
 from collections import Counter
@@ -24,7 +25,7 @@ SEASONS= {
     16: (1700606490,1708537294)
 }
 
-DEPELETED = 'You have reached a limit (replay)'
+DEPLETED = 'You have reached a limit (replay)'
 NO_ACCESS = 'Sorry, you need to be registered more than 24 hours and have played at least 2 games to access this feature.'
 
 sess_gen = None
@@ -146,7 +147,7 @@ def analyze_table_data(sess, table_id):
 
     j = resp.json()
     if 'error' in j:
-        if j['error'] == DEPELETED:
+        if j['error'] == DEPLETED:
             print('Account replay access depleted.', sess.email)
             return
         elif j['error'] == NO_ACCESS:
@@ -222,49 +223,6 @@ def analyze_table_data(sess, table_id):
         print(f'Error analyzing replay for table {table_id}: ', e)
         print(e.__traceback__.tb_lineno)
         return
-
-
-# if ran as script, automatically begin scraping
-if __name__ == '__main__':
-    sess = get_next_session()
-
-    player_ids = get_players_by_rank(sess, 10)
-    print(f'found the top {len(player_ids)} ranking player IDs')
-
-    for player in player_ids:
-        hive_db.searched_player(player)
-
-    table_ids = list(get_top_arena_tables(sess, player_ids))
-    print(f'proccessing {len(table_ids)} table IDs:')
-
-    index = 0
-    session_count = 0
-    while sess and index < len(table_ids):
-        table_id = table_ids[index]
-        result = analyze_table_data(sess, table_id)
-
-        if not result:
-            # try to get new acct
-            # if result fails again, its all ogre
-            print(f'session expired or account depleted... added {index - session_count} table_ids with {sess.email}, attempting next account')
-            session_count = index
-            sess = get_next_session()
-            if not sess:
-                break
-            continue
-
-        if not result:
-            print(f'failed to retrieve data for table_id {table_id}')
-            break
-        
-        # send to db
-        hive_db.insert_table_data(table_id, *result)
-        index += 1
-
-    print(f'SCRAPING COMPLETED')
-    print(f'  added {index} tables to db')
-    print(f'  {len(table_ids) - index} ids remaining:')
-    print(f'    {table_ids[index:]}')
 
 
 # old way of retrieving request token from embedded javascript. Leaving here in case its needed again
