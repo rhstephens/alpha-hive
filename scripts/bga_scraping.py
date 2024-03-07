@@ -22,11 +22,13 @@ REPLAY = '/archive/archive/logs.html'
 GAME_ID = 79
 # start and end dates
 SEASONS= {
-    16: (1700606490,1708537294)
+#    16: (1700606490,1708537294)
+    16: (1683423182, 1708537294)
 }
 
 DEPLETED = 'You have reached a limit (replay)'
 NO_ACCESS = 'Sorry, you need to be registered more than 24 hours and have played at least 2 games to access this feature.'
+EMPTY_ARCHIVE = 'Unfortunately the replay for this game has been lost'
 
 sess_gen = None
 
@@ -143,7 +145,7 @@ def analyze_table_data(sess, table_id):
     resp = sess.get(BASE + REPLAY, params={'table': table_id, 'translated': 'true'})
 
     # detection prevention?
-    time.sleep(random.randint(3, 7))
+    time.sleep(random.randint(2, 4))
 
     j = resp.json()
     if 'error' in j:
@@ -153,6 +155,9 @@ def analyze_table_data(sess, table_id):
         elif j['error'] == NO_ACCESS:
             print('Account cannot access any replays.', sess.email)
             return
+        elif EMPTY_ARCHIVE in j['error']:
+            print(f'Skipping table {table_id}, the replay has been lost or corrupted')
+            return table_id
 
     if 'data' not in j:
         print(f'Response from table_id {table_id} does not contain data:', sess.email)

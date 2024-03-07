@@ -31,6 +31,10 @@ if __name__ == '__main__':
                 break
             continue
 
+        if result == table_id: # this table should be ignored for whichever reason (missing replay, corrupted, etc.)
+            index += 1
+            continue
+
         if not result:
             print(f'failed to retrieve data for table_id {table_id}')
             break
