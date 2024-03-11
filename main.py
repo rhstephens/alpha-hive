@@ -7,13 +7,13 @@ if __name__ == '__main__':
     sess = bga_scraping.get_next_session()
 
     player_ids = bga_scraping.get_players_by_rank(sess, 10)
-    print(f'found the top {len(player_ids)} ranking player IDs')
+    print(f'found the top {len(player_ids)} ranking player IDs', flush=True)
 
     for player in player_ids:
         bga_scraping.hive_db.searched_player(player)
 
     table_ids = list(bga_scraping.get_top_arena_tables(sess, player_ids))
-    print(f'proccessing {len(table_ids)} table IDs:')
+    print(f'proccessing {len(table_ids)} table IDs:', flush=True)
 
     index = 0
     session_count = 0
@@ -24,7 +24,7 @@ if __name__ == '__main__':
         if not result:
             # try to get new acct
             # if result fails again, its all ogre
-            print(f'session expired or account depleted... added {index - session_count} table_ids with {sess.email}, attempting next account')
+            print(f'session expired or account depleted... added {index - session_count} table_ids with {sess.email}, attempting next account', flush=True)
             session_count = index
             sess = bga_scraping.get_next_session()
             if not sess:
@@ -33,6 +33,7 @@ if __name__ == '__main__':
 
         if result == table_id: # this table should be ignored for whichever reason (missing replay, corrupted, etc.)
             index += 1
+            session_count += 1
             continue
 
         if not result:
