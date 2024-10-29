@@ -1,15 +1,11 @@
 import json
-import os.path
-import re
-import random
 import requests
 import time
 
 from db import hive_db
 from accounts import ACCOUNTS
 from bs4 import BeautifulSoup
-from collections import Counter
-from datetime import datetime
+import datetime
 
 BASE = 'https://boardgamearena.com'
 LOGIN = '/account/account/login.html'
@@ -17,14 +13,10 @@ RANKING = '/gamepanel/gamepanel/getRanking.html'
 DATA = '/gamepanel?game=hive'
 PLAYER = '/gamestats'
 GAMES = '/gamestats/gamestats/getGames.html'
+TABLE = '/table/table/tableinfos.html'
 ARCHIVE = '/gamereview/gamereview/requestTableArchive.html'
 REPLAY = '/archive/archive/logs.html'
 GAME_ID = 79
-# start and end dates
-SEASONS= {
-#    16: (1700606490,1708537294)
-    16: (1683423182, 1708537294)
-}
 
 DEPLETED = 'You have reached a limit (replay)'
 NO_ACCESS = 'Sorry, you need to be registered more than 24 hours and have played at least 2 games to access this feature.'
@@ -63,35 +55,31 @@ def get_next_session():
     return next(sess_gen, None)
 
 
-def get_current_season_timestamps(sess):
-    """ Returns a tuple containing the start and end dates of the current season in unix timestamp form.
-    """
-
-    resp = sess.get(BASE + DATA, params={'game_id': GAME_ID, 'with_ranking_info': 'false'})
-    j = resp.json()
-    #TODO: REMOVE
-    print(resp)
-    print(f'get_current_season response: {j}')
-    #
-    start_date = datetime.fromisoformat(j['currentArenaTimeSpan']['start'])
-    end_date = datetime.fromisoformat(j['currentArenaTimeSpan']['end'])
-    return (int(start_date.timestamp()), int(end_date.timestamp()))
-
-
-def get_top_arena_tables(sess, player_ids, season=16):
-    """ Returns a set of unique table ids for arena games from the given player_ids this season.
+def get_top_arena_tables(sess, player_ids, months_ago=12):
+    """ Returns a set of unique table ids for given player_ids' games within the last months_ago months
     """
 
     all_tables = set()
     exclusion_set = hive_db.get_unique_table_ids()
-    start_date, end_date = SEASONS[season][0], SEASONS[season][1]
+    now = int(time.time())
+    start = int((datetime.datetime.now() - datetime.timedelta(months=months_ago)).timestamp())
     #TODO: start_date, end_date = get_current_season_timestamps(sess)
 
     for player_id in player_ids:
         # now that we have a valid token, search every page of this player's match history
-        params = {'page': 0, 'player': player_id, 'game_id': GAME_ID, 'start_date': start_date, 'end_date': end_date, 'finished': 1, 'updateStats': 0}
+        params = {'page': 0,
+                  'player': player_id,
+                  'game_id': GAME_ID,
+                  'start_date': start,
+                  'end_date': now,
+                  'finished': 1,
+                  'updateStats': 0
+                 }
         table_ids = set()
         while True:
+            if (params['page'] > 500):
+                print('over 500 pages...')
+                break
             params['page'] += 1
             resp = sess.get(BASE + GAMES, params=params)
 
@@ -111,7 +99,7 @@ def get_top_arena_tables(sess, player_ids, season=16):
 
 
 def get_players_by_rank(sess, num_players=10):
-    """ Returns the highest 10 ids for the players at, or below, the given rank
+    """ Returns the 10 highest ranking players' ids for the current season
     """
 
     players = set()
@@ -122,7 +110,6 @@ def get_players_by_rank(sess, num_players=10):
         params['start'] = start
         resp = sess.get(BASE + RANKING, params=params)
 
-        #TODO lookup player_ids and see the last update time to reduce number of calls
         for player in resp.json()['data']['ranks']:
             if len(players) >= num_players:
                 break
@@ -131,21 +118,62 @@ def get_players_by_rank(sess, num_players=10):
     return players
 
 
+def get_expansion_info(sess, table_id):
+    """ Returns a 3 boolean tuple describing whether the given table_id has expansions:
+        (mosquito, ladybug, pillbug)
+    """
+    if not sess:
+        return
+    
+    # get general info from table
+    resp = sess.get(BASE + TABLE, params={'id': table_id})
+
+    j = resp.json()
+    if 'error' in j:
+        print(f'Unknown error: {j["error"]}')
+        return
+    
+    try:
+        m = j['data']['options']['100']['value'] == '2'
+        l = j['data']['options']['101']['value'] == '2'
+        p = j['data']['options']['102']['value'] == '2'
+    except:
+        print(f'Unknown error: {j["error"]}')
+        return table_id
+    
+    return (m, l, p)
+
+
 def analyze_table_data(sess, table_id):
     """ Returns all information about this table_id's replay in the form of:
-        (player_id_white, player_id_black, winner, every move history for this table_id game)
-        Returns None if error or the current account is unable to access further replays.
+        (player_id_white, player_id_black, winner, expansion booleans, every move history for this table_id game)
+        Returns None if error, or the table_id if the account is unable to access further replays.
     """
 
     if not sess:
         return
+    
+    # get general info from table
+    resp = sess.get(BASE + TABLE, params={'table': table_id})
+
+    j = resp.json()
+    if 'error' in j:
+        print(f'Unknown error: {j["error"]}')
+        return
+    
+    try:
+        m = j['data']['options']['100']['value'] == '2'
+        l = j['data']['options']['101']['value'] == '2'
+        p = j['data']['options']['102']['value'] == '2'
+    except:
+        print(f'Unknown error: {j["error"]}')
+        return table_id
+    
+
 
     # seemingly required to produce log
     sess.get(BASE + ARCHIVE, params={'table': table_id})
     resp = sess.get(BASE + REPLAY, params={'table': table_id, 'translated': 'true'})
-
-    # detection prevention?
-    time.sleep(random.randint(2, 4))
 
     j = resp.json()
     if 'error' in j:
@@ -157,6 +185,12 @@ def analyze_table_data(sess, table_id):
             return
         elif EMPTY_ARCHIVE in j['error']:
             print(f'Skipping table {table_id}, the replay has been lost or corrupted')
+            return table_id
+        elif 'disabled for your account' in j['error']:
+            print('Account banned: ', sess.email)
+            return
+        else:
+            print(f'Unknown error: {j["error"]}')
             return table_id
 
     if 'data' not in j:
@@ -222,7 +256,7 @@ def analyze_table_data(sess, table_id):
         elif len(num_winners) > 1:
             winner = 1 #tie (aka sacrifice victory)
 
-        return (player_white, player_black, winner, all_actions)
+        return (player_white, player_black, winner, m, l, p, all_actions)
 
     except Exception as e:
         print(f'Error analyzing replay for table {table_id}: ', e)

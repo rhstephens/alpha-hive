@@ -23,7 +23,7 @@ time_difference=$((current_time - last_execution_time))
 # Check if the time difference is greater than 24.5 hours (88200 seconds)
 if [ "$time_difference" -gt 88200 ]; then
     # Run the Python program
-    python "$PYTHON_PROGRAM"
+    python3 "$PYTHON_PROGRAM" | timestamp >> "./scrape.log"
 
     # Update the last execution time if successful
     if [ "$?" -eq 0 ]; then
